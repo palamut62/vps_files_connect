@@ -500,6 +500,101 @@ func handleSysInfo(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, info)
 }
 
+func handleReadFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		jsonError(w, 405, "Method not allowed")
+		return
+	}
+
+	mu.Lock()
+	client := sftpClient
+	mu.Unlock()
+
+	if client == nil {
+		jsonError(w, 400, "Not connected")
+		return
+	}
+
+	filePath := r.URL.Query().Get("path")
+	if filePath == "" {
+		jsonError(w, 400, "Path is required")
+		return
+	}
+
+	file, err := client.Open(filePath)
+	if err != nil {
+		jsonError(w, 500, fmt.Sprintf("Failed to open file: %v", err))
+		return
+	}
+	defer file.Close()
+
+	stat, err := file.Stat()
+	if err != nil {
+		jsonError(w, 500, fmt.Sprintf("Failed to stat file: %v", err))
+		return
+	}
+
+	// Limit to 5MB for text editing
+	if stat.Size() > 5*1024*1024 {
+		jsonError(w, 400, "File too large to edit (max 5MB)")
+		return
+	}
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		jsonError(w, 500, fmt.Sprintf("Failed to read file: %v", err))
+		return
+	}
+
+	jsonResponse(w, 200, map[string]interface{}{
+		"content": string(data),
+		"size":    stat.Size(),
+	})
+}
+
+func handleWriteFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		jsonError(w, 405, "Method not allowed")
+		return
+	}
+
+	mu.Lock()
+	client := sftpClient
+	mu.Unlock()
+
+	if client == nil {
+		jsonError(w, 400, "Not connected")
+		return
+	}
+
+	var req struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, 400, "Invalid request")
+		return
+	}
+
+	file, err := client.Create(req.Path)
+	if err != nil {
+		jsonError(w, 500, fmt.Sprintf("Failed to create file: %v", err))
+		return
+	}
+	defer file.Close()
+
+	written, err := file.Write([]byte(req.Content))
+	if err != nil {
+		jsonError(w, 500, fmt.Sprintf("Failed to write file: %v", err))
+		return
+	}
+
+	jsonResponse(w, 200, map[string]interface{}{
+		"status": "saved",
+		"size":   written,
+	})
+}
+
 func handleExec(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		jsonError(w, 405, "Method not allowed")
@@ -573,6 +668,8 @@ func main() {
 	http.HandleFunc("/download", corsMiddleware(handleDownload))
 	http.HandleFunc("/diskinfo", corsMiddleware(handleDiskInfo))
 	http.HandleFunc("/sysinfo", corsMiddleware(handleSysInfo))
+	http.HandleFunc("/readfile", corsMiddleware(handleReadFile))
+	http.HandleFunc("/writefile", corsMiddleware(handleWriteFile))
 	http.HandleFunc("/exec", corsMiddleware(handleExec))
 	http.HandleFunc("/disconnect", corsMiddleware(handleDisconnect))
 

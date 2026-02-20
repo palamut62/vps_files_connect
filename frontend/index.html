@@ -866,6 +866,26 @@
       white-space: nowrap;
     }
 
+    /* Editor panel */
+    .editor-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:5000; align-items:center; justify-content:center; }
+    .editor-overlay.active { display:flex; }
+    .editor-panel { background:#16213e; border:1px solid #0f3460; border-radius:10px; width:85vw; height:80vh; display:flex; flex-direction:column; box-shadow:0 8px 32px rgba(0,0,0,0.6); }
+    .editor-header { display:flex; align-items:center; padding:8px 14px; border-bottom:1px solid #0f3460; gap:10px; flex-shrink:0; }
+    .editor-filename { flex:1; font-size:12px; color:#6a8cff; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .editor-lang { font-size:10px; color:#5a6a8a; background:#0f3460; padding:2px 8px; border-radius:3px; }
+    .editor-btn { padding:5px 14px; border:none; border-radius:4px; font-size:11px; cursor:pointer; font-weight:500; }
+    .editor-btn-save { background:#4a6cf7; color:#fff; }
+    .editor-btn-save:hover { background:#3b5de7; }
+    .editor-btn-close { background:#0f3460; color:#7a8bbf; border:1px solid #1a3a6e; }
+    .editor-btn-close:hover { background:#1a3a6e; color:#e0e0e0; }
+    .editor-body { flex:1; display:flex; min-height:0; }
+    .editor-lines { width:42px; background:#111128; padding:10px 0; overflow:hidden; text-align:right; font-family:'Consolas','Courier New',monospace; font-size:12px; line-height:1.5; color:#3a4a6a; user-select:none; border-right:1px solid #0f3460; }
+    .editor-textarea { flex:1; background:#0d0d1a; border:none; outline:none; color:#e0e0e0; font-family:'Consolas','Courier New',monospace; font-size:12px; line-height:1.5; padding:10px; resize:none; tab-size:2; }
+    .editor-textarea::-webkit-scrollbar { width:6px; }
+    .editor-textarea::-webkit-scrollbar-thumb { background:#0f3460; border-radius:3px; }
+    .editor-status { display:flex; align-items:center; padding:4px 14px; border-top:1px solid #0f3460; font-size:10px; color:#5a6a8a; gap:14px; flex-shrink:0; }
+    .editor-modified { color:#f39c12; }
+
     .term-input {
       flex: 1;
       background: transparent;
@@ -973,6 +993,27 @@
   <!-- Bottom statusbar for disk info -->
   <div class="statusbar" id="diskBar"></div>
 
+  <!-- File Editor -->
+  <div class="editor-overlay" id="editorOverlay">
+    <div class="editor-panel">
+      <div class="editor-header">
+        <span class="editor-filename" id="editorFilename"></span>
+        <span class="editor-lang" id="editorLang"></span>
+        <button class="editor-btn editor-btn-save" id="editorSave" onclick="saveEditorFile()">Kaydet (Ctrl+S)</button>
+        <button class="editor-btn editor-btn-close" onclick="closeEditor()">Kapat</button>
+      </div>
+      <div class="editor-body">
+        <div class="editor-lines" id="editorLines"></div>
+        <textarea class="editor-textarea" id="editorTextarea" spellcheck="false"></textarea>
+      </div>
+      <div class="editor-status">
+        <span id="editorCursor">Satir 1, Sutun 1</span>
+        <span id="editorSize"></span>
+        <span id="editorModified"></span>
+      </div>
+    </div>
+  </div>
+
   <!-- Custom modal -->
   <div class="modal-overlay" id="modalOverlay">
     <div class="modal">
@@ -984,6 +1025,7 @@
   </div>
 
   <div class="ctx-menu" id="ctxMenu">
+    <div class="ctx-menu-item" id="ctxEdit">&#x1F4DD; Duzenle</div>
     <div class="ctx-menu-item" id="ctxDownload">&#x2B07; Indir</div>
     <div class="ctx-menu-item" id="ctxRename">&#x270F; Yeniden Adlandir</div>
     <div class="ctx-menu-sep"></div>

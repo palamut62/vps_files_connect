@@ -11,6 +11,8 @@ let showHidden = false;
 let terminalVisible = false;
 let termHistory = [];
 let termHistIndex = -1;
+let editorFilePath = null;
+let editorOrigContent = '';
 let termPromptText = '$';
 
 // Load saved credentials on startup
@@ -222,6 +224,8 @@ function renderFiles() {
 
     if (f.isDir) {
       item.ondblclick = () => navigateTo(fullPath);
+    } else if (isEditableFile(f.name)) {
+      item.ondblclick = () => openEditor(fullPath);
     }
 
     item.onclick = (e) => {
@@ -392,6 +396,11 @@ function setupContextMenu() {
     ctxTargetPath = null;
   });
 
+  document.getElementById('ctxEdit').addEventListener('click', () => {
+    menu.classList.remove('active');
+    if (ctxTargetPath && !ctxTargetIsDir) openEditor(ctxTargetPath);
+  });
+
   document.getElementById('ctxDelete').addEventListener('click', () => {
     menu.classList.remove('active');
     if (ctxTargetPath) deleteFile(ctxTargetPath);
@@ -433,6 +442,10 @@ function showContextMenu(e, filePath, isDir) {
 
   // Hide download for dirs
   document.getElementById('ctxDownload').style.display = isDir ? 'none' : '';
+
+  // Show edit only for editable files
+  const isEditable = !isDir && isEditableFile(filePath.split('/').pop());
+  document.getElementById('ctxEdit').style.display = isEditable ? '' : 'none';
 
   menu.style.left = Math.min(e.clientX, window.innerWidth - 180) + 'px';
   menu.style.top = Math.min(e.clientY, window.innerHeight - 160) + 'px';
@@ -842,6 +855,159 @@ async function runTermCommand() {
 
   output.scrollTop = output.scrollHeight;
 }
+
+// Editable file extensions
+const EDITABLE_EXTS = new Set([
+  'txt','md','log','csv','json','xml','yaml','yml','ini','cfg','conf','toml',
+  'js','ts','jsx','tsx','py','go','rs','java','c','cpp','h','cs','rb','php','sh','bat','ps1',
+  'html','htm','css','scss','less','sql','env','gitignore','dockerignore',
+  'dockerfile','makefile','cmake','gradle','properties','lock','map','svg',
+]);
+
+function isEditableFile(name) {
+  const ext = name.split('.').pop().toLowerCase();
+  const baseName = name.toLowerCase();
+  return EDITABLE_EXTS.has(ext) || ['dockerfile','makefile','.gitignore','.env','.dockerignore'].includes(baseName);
+}
+
+function getLang(name) {
+  const ext = name.split('.').pop().toLowerCase();
+  const map = { js:'JavaScript', ts:'TypeScript', py:'Python', go:'Go', rs:'Rust', java:'Java',
+    c:'C', cpp:'C++', cs:'C#', rb:'Ruby', php:'PHP', sh:'Shell', html:'HTML', css:'CSS',
+    json:'JSON', xml:'XML', yaml:'YAML', yml:'YAML', sql:'SQL', md:'Markdown', txt:'Text',
+    toml:'TOML', ini:'INI', svg:'SVG', scss:'SCSS', less:'LESS', jsx:'JSX', tsx:'TSX' };
+  return map[ext] || ext.toUpperCase();
+}
+
+async function openEditor(filePath) {
+  showStatus('Dosya aciliyor...', 'info');
+  try {
+    const res = await fetch(`${API}/readfile?path=${encodeURIComponent(filePath)}`);
+    const data = await res.json();
+    if (!res.ok) { showStatus(data.error || 'Dosya acilamadi', 'error'); return; }
+
+    editorFilePath = filePath;
+    editorOrigContent = data.content;
+    const fileName = filePath.split('/').pop();
+
+    document.getElementById('editorFilename').textContent = filePath;
+    document.getElementById('editorLang').textContent = getLang(fileName);
+    document.getElementById('editorSize').textContent = formatSize(data.size);
+    document.getElementById('editorModified').textContent = '';
+    document.getElementById('editorModified').className = '';
+
+    const ta = document.getElementById('editorTextarea');
+    ta.value = data.content;
+    updateEditorLines();
+    updateEditorCursor();
+
+    document.getElementById('editorOverlay').classList.add('active');
+    ta.focus();
+    showStatus('', '');
+  } catch (e) {
+    showStatus('Dosya acma hatasi', 'error');
+  }
+}
+
+function closeEditor() {
+  const ta = document.getElementById('editorTextarea');
+  if (ta.value !== editorOrigContent) {
+    showModal('\u26A0\uFE0F', 'Kaydedilmemis Degisiklik', 'Degisiklikler kaydedilmedi. Kapatilsin mi?', [
+      { label: 'Iptal', class: 'modal-btn-cancel', value: false },
+      { label: 'Kapat', class: 'modal-btn-confirm', value: true },
+    ]).then(ok => {
+      if (ok) { document.getElementById('editorOverlay').classList.remove('active'); editorFilePath = null; }
+    });
+  } else {
+    document.getElementById('editorOverlay').classList.remove('active');
+    editorFilePath = null;
+  }
+}
+
+async function saveEditorFile() {
+  if (!editorFilePath) return;
+  const content = document.getElementById('editorTextarea').value;
+
+  showStatus('Kaydediliyor...', 'info');
+  try {
+    const res = await fetch(`${API}/writefile`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: editorFilePath, content }),
+    });
+    const data = await res.json();
+    if (!res.ok) { showStatus(data.error || 'Kaydetme hatasi', 'error'); return; }
+
+    editorOrigContent = content;
+    document.getElementById('editorModified').textContent = '';
+    document.getElementById('editorModified').className = '';
+    document.getElementById('editorSize').textContent = formatSize(data.size);
+    showStatus('Kaydedildi', 'success');
+    listFiles();
+  } catch (e) {
+    showStatus('Kaydetme hatasi', 'error');
+  }
+}
+
+function updateEditorLines() {
+  const ta = document.getElementById('editorTextarea');
+  const lines = ta.value.split('\n').length;
+  const linesDiv = document.getElementById('editorLines');
+  let html = '';
+  for (let i = 1; i <= lines; i++) html += i + '<br>';
+  linesDiv.innerHTML = `<div style="padding:0 6px">${html}</div>`;
+}
+
+function updateEditorCursor() {
+  const ta = document.getElementById('editorTextarea');
+  const pos = ta.selectionStart;
+  const text = ta.value.substring(0, pos);
+  const line = text.split('\n').length;
+  const col = pos - text.lastIndexOf('\n');
+  document.getElementById('editorCursor').textContent = `Satir ${line}, Sutun ${col}`;
+
+  // Modified indicator
+  if (ta.value !== editorOrigContent) {
+    document.getElementById('editorModified').textContent = 'Degistirildi';
+    document.getElementById('editorModified').className = 'editor-modified';
+  } else {
+    document.getElementById('editorModified').textContent = '';
+    document.getElementById('editorModified').className = '';
+  }
+}
+
+// Editor event listeners
+document.addEventListener('DOMContentLoaded', () => {
+  const ta = document.getElementById('editorTextarea');
+  ta.addEventListener('input', () => { updateEditorLines(); updateEditorCursor(); });
+  ta.addEventListener('click', updateEditorCursor);
+  ta.addEventListener('keyup', updateEditorCursor);
+  ta.addEventListener('scroll', () => {
+    document.getElementById('editorLines').scrollTop = ta.scrollTop;
+  });
+
+  // Tab key support in editor
+  ta.addEventListener('keydown', (e) => {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+      ta.value = ta.value.substring(0, start) + '  ' + ta.value.substring(end);
+      ta.selectionStart = ta.selectionEnd = start + 2;
+      updateEditorLines();
+      updateEditorCursor();
+    }
+    // Ctrl+S to save
+    if (e.ctrlKey && e.key === 's') {
+      e.preventDefault();
+      saveEditorFile();
+    }
+    // Escape to close
+    if (e.key === 'Escape') {
+      closeEditor();
+    }
+  });
+});
 
 // Terminal history navigation, global shortcut, and resize
 document.addEventListener('DOMContentLoaded', () => {

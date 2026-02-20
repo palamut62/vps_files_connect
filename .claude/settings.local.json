@@ -11,7 +11,9 @@
       "Bash(go build:*)",
       "Bash(npm install:*)",
       "Bash(npx electron:*)",
-      "Bash(./server.exe)"
+      "Bash(./server.exe)",
+      "Bash(ping:*)",
+      "Bash(curl:*)"
     ]
   }
 }
