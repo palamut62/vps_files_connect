@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go mod tidy:*)",
+      "Bash(where:*)",
+      "Bash(cmd.exe /c \"where go\")",
+      "Bash(cmd.exe /c \"go version\")",
+      "Bash(export PATH=\"$PATH:/c/Program Files/Go/bin:/c/Go/bin:$HOME/go/bin\")",
+      "Bash(go version:*)",
+      "Bash(export PATH=\"$PATH:/c/Program Files/Go/bin:/c/Go/bin\")",
+      "Bash(go build:*)",
+      "Bash(npm install:*)",
+      "Bash(npx electron:*)",
+      "Bash(./server.exe)"
+    ]
+  }
+}

@@ -1,0 +1,27 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Go binary
+backend/server.exe
+backend/server
+
+# Electron build output
+dist/
+out/
+build/
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
