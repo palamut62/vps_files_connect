@@ -326,13 +326,39 @@ function renderBreadcrumb() {
 }
 
 // Upload files to VPS
+let overwriteAll = false;
+
+async function checkFileExists(remotePath) {
+  try {
+    const res = await fetch(`${API}/exists?path=${encodeURIComponent(remotePath)}`);
+    const data = await res.json();
+    return data.exists;
+  } catch (_) { return false; }
+}
+
 async function uploadFileList(files) {
   if (!connected || !files.length) {
     if (!connected) showStatus('Once sunucuya baglanin', 'error');
     return;
   }
 
+  overwriteAll = false;
+
   for (const file of files) {
+    const remotePath = currentPath === '.' ? file.name : `${currentPath}/${file.name}`;
+
+    // Check if file exists
+    if (!overwriteAll && await checkFileExists(remotePath)) {
+      const choice = await showModal('\u26A0\uFE0F', 'Dosya Zaten Var',
+        `"${file.name}" zaten mevcut. Ne yapmak istiyorsunuz?`, [
+        { label: 'Atla', class: 'modal-btn-cancel', value: 'skip' },
+        { label: 'Uzerine Yaz', class: 'modal-btn-confirm', value: 'overwrite' },
+        { label: 'Tumu Uzerine Yaz', class: 'modal-btn-ok', value: 'overwriteAll' },
+      ]);
+      if (choice === 'skip') continue;
+      if (choice === 'overwriteAll') overwriteAll = true;
+    }
+
     const formData = new FormData();
     formData.append('file', file);
     formData.append('path', currentPath);
@@ -357,19 +383,90 @@ async function uploadFileList(files) {
   loadDiskInfo();
 }
 
+// Upload folder files preserving directory structure
+async function uploadFolderFiles(files) {
+  if (!connected || !files.length) {
+    if (!connected) showStatus('Once sunucuya baglanin', 'error');
+    return;
+  }
+
+  overwriteAll = false;
+  let uploaded = 0;
+  let skipped = 0;
+  const fileList = Array.from(files);
+
+  // Filter out node_modules etc.
+  const validFiles = fileList.filter(f => {
+    const p = (f.webkitRelativePath || f.name).replace(/\\/g, '/');
+    return !p.includes('node_modules/') && !p.includes('.git/') && !p.includes('__pycache__/');
+  });
+
+  const total = validFiles.length;
+
+  for (const file of validFiles) {
+    const subpath = (file.webkitRelativePath || file.name).replace(/\\/g, '/');
+    const remotePath = currentPath === '.' ? subpath : `${currentPath}/${subpath}`;
+
+    // Check if file exists
+    if (!overwriteAll && await checkFileExists(remotePath)) {
+      const choice = await showModal('\u26A0\uFE0F', 'Dosya Zaten Var',
+        `"${subpath}" zaten mevcut. Ne yapmak istiyorsunuz?`, [
+        { label: 'Atla', class: 'modal-btn-cancel', value: 'skip' },
+        { label: 'Uzerine Yaz', class: 'modal-btn-confirm', value: 'overwrite' },
+        { label: 'Tumu Uzerine Yaz', class: 'modal-btn-ok', value: 'overwriteAll' },
+      ]);
+      if (choice === 'skip') { skipped++; continue; }
+      if (choice === 'overwriteAll') overwriteAll = true;
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('path', currentPath);
+    formData.append('subpath', subpath);
+
+    uploaded++;
+    showStatus(`Yukleniyor (${uploaded}/${total}): ${subpath}...`, 'info');
+
+    try {
+      const res = await fetch(`${API}/upload`, { method: 'POST', body: formData });
+      const data = await res.json();
+      if (!res.ok) {
+        showStatus(`Yukleme hatasi: ${data.error} - ${subpath}`, 'error');
+        continue; // Skip failed file, continue with rest
+      }
+    } catch (e) {
+      showStatus(`Yukleme hatasi: ${subpath}`, 'error');
+      continue;
+    }
+  }
+
+  const msg = skipped > 0 ? `Klasor yuklendi (${uploaded} yuklendi, ${skipped} atlandi)` : `Klasor yuklendi (${uploaded} dosya)`;
+  showStatus(msg, 'success');
+  listFiles();
+  loadDiskInfo();
+}
+
 // Upload zone: click, drag-drop, paste
 function setupUploadZone() {
   const zone = document.getElementById('uploadZone');
   const input = document.getElementById('fileInput');
+  const folderInput = document.getElementById('folderInput');
 
-  // Click to select files
-  zone.addEventListener('click', () => input.click());
+  // Buttons handle clicks directly now
 
-  // File selected via dialog -> auto upload
+  // File selected
   input.addEventListener('change', () => {
     if (input.files.length) {
       uploadFileList(input.files);
       input.value = '';
+    }
+  });
+
+  // Folder selected
+  folderInput.addEventListener('change', () => {
+    if (folderInput.files.length) {
+      uploadFolderFiles(folderInput.files);
+      folderInput.value = '';
     }
   });
 
@@ -413,7 +510,10 @@ function setupContextMenu() {
 
   document.getElementById('ctxDownload').addEventListener('click', () => {
     menu.classList.remove('active');
-    if (ctxTargetPath && !ctxTargetIsDir) downloadFile(ctxTargetPath);
+    if (ctxTargetPath) {
+      if (ctxTargetIsDir) downloadDir(ctxTargetPath);
+      else downloadFile(ctxTargetPath);
+    }
   });
 
   document.getElementById('ctxDeleteSelected').addEventListener('click', () => {
@@ -440,8 +540,8 @@ function showContextMenu(e, filePath, isDir) {
   document.getElementById('ctxDeleteSelected').style.display = hasMulti ? '' : 'none';
   document.getElementById('ctxDownloadSelected').style.display = hasMulti ? '' : 'none';
 
-  // Hide download for dirs
-  document.getElementById('ctxDownload').style.display = isDir ? 'none' : '';
+  // Show download for both files and dirs
+  document.getElementById('ctxDownload').style.display = '';
 
   // Show edit only for editable files
   const isEditable = !isDir && isEditableFile(filePath.split('/').pop());
@@ -516,16 +616,90 @@ async function promptNewFolder() {
   } catch (e) { showStatus('Hata', 'error'); }
 }
 
-// Download file
+// Download with progress
+let dlCounter = 0;
+
+function createDlItem(name) {
+  const id = 'dl-' + (++dlCounter);
+  const bar = document.getElementById('dlBar');
+  const div = document.createElement('div');
+  div.className = 'dl-item';
+  div.id = id;
+  div.innerHTML = `
+    <div class="dl-item-name">${escapeHtml(name)}</div>
+    <div class="dl-item-info"><span class="dl-status">Indiriliyor...</span><span class="dl-pct"></span><span class="dl-size"></span></div>
+    <div class="dl-item-track"><div class="dl-item-fill" style="width:0%"></div></div>`;
+  bar.appendChild(div);
+  return id;
+}
+
+function updateDlItem(id, pct, loaded, total) {
+  const div = document.getElementById(id);
+  if (!div) return;
+  const roundPct = Math.round(pct);
+  div.querySelector('.dl-item-fill').style.width = (total > 0 ? roundPct : Math.min(95, 50 + loaded / 1024 / 50)) + '%';
+  div.querySelector('.dl-pct').textContent = total > 0 ? `%${roundPct}` : '';
+  div.querySelector('.dl-size').textContent = formatSize(loaded) + (total > 0 ? ` / ${formatSize(total)}` : '');
+  div.querySelector('.dl-status').textContent = `Indiriliyor...`;
+}
+
+function finishDlItem(id, success) {
+  const div = document.getElementById(id);
+  if (!div) return;
+  div.classList.add(success ? 'dl-item-done' : 'dl-item-error');
+  div.querySelector('.dl-item-fill').style.width = '100%';
+  div.querySelector('.dl-status').textContent = success ? 'Tamamlandi' : 'Hata';
+  setTimeout(() => { div.style.opacity = '0'; div.style.transition = 'opacity 0.5s'; setTimeout(() => div.remove(), 500); }, 3000);
+}
+
+async function downloadWithProgress(url, fileName) {
+  const dlId = createDlItem(fileName);
+  try {
+    const res = await fetch(url);
+    if (!res.ok) { finishDlItem(dlId, false); return; }
+
+    const contentLength = res.headers.get('Content-Length') || res.headers.get('content-length');
+    const total = contentLength ? parseInt(contentLength) : 0;
+    console.log('Download Content-Length:', contentLength, 'total:', total);
+    const reader = res.body.getReader();
+    const chunks = [];
+    let loaded = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      loaded += value.length;
+      const pct = total > 0 ? Math.round((loaded / total) * 100) : 0;
+      updateDlItem(dlId, total > 0 ? pct : Math.min(90, loaded / 1024 / 10), loaded, total);
+    }
+
+    const blob = new Blob(chunks);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+
+    finishDlItem(dlId, true);
+  } catch (e) {
+    finishDlItem(dlId, false);
+  }
+}
+
 function downloadFile(filePath) {
+  const fileName = filePath.split('/').pop();
   const url = `${API}/download?path=${encodeURIComponent(filePath)}`;
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filePath.split('/').pop();
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  showStatus('Indiriliyor...', 'info');
+  downloadWithProgress(url, fileName);
+}
+
+// Download directory as zip
+function downloadDir(dirPath) {
+  const dirName = dirPath.split('/').pop();
+  const url = `${API}/downloaddir?path=${encodeURIComponent(dirPath)}`;
+  downloadWithProgress(url, dirName + '.zip');
 }
 
 // Multi-select delete
@@ -554,7 +728,10 @@ async function deleteSelected() {
 // Multi-select download
 function downloadSelected() {
   for (const fp of selectedFiles) {
-    downloadFile(fp);
+    // Check if it's a dir by finding the matching item
+    const item = allFileItems.find(el => el.dataset.path === fp);
+    if (item && item.dataset.isDir === 'true') downloadDir(fp);
+    else downloadFile(fp);
   }
 }
 
@@ -887,8 +1064,23 @@ async function openEditor(filePath) {
     if (!res.ok) { showStatus(data.error || 'Dosya acilamadi', 'error'); return; }
 
     editorFilePath = filePath;
-    editorOrigContent = data.content;
     const fileName = filePath.split('/').pop();
+    const ext = fileName.split('.').pop().toLowerCase();
+
+    // Auto-format JSON
+    if (ext === 'json') {
+      try {
+        let clean = data.content.replace(/"(?:[^"\\]|\\.)*"/g, (match) => {
+          return match.replace(/[\x00-\x1f]/g, (ch) => {
+            const map = {'\n':'\\n','\r':'\\r','\t':'\\t'};
+            return map[ch] || '\\u' + ('000' + ch.charCodeAt(0).toString(16)).slice(-4);
+          });
+        });
+        data.content = JSON.stringify(JSON.parse(clean), null, 2);
+      } catch (_) {}
+    }
+
+    editorOrigContent = data.content;
 
     document.getElementById('editorFilename').textContent = filePath;
     document.getElementById('editorLang').textContent = getLang(fileName);
@@ -973,6 +1165,44 @@ function updateEditorCursor() {
   } else {
     document.getElementById('editorModified').textContent = '';
     document.getElementById('editorModified').className = '';
+  }
+}
+
+function formatEditorContent() {
+  const ta = document.getElementById('editorTextarea');
+  const ext = editorFilePath ? editorFilePath.split('.').pop().toLowerCase() : '';
+  let text = ta.value;
+
+  try {
+    if (ext === 'json') {
+      // Fix unescaped control chars inside JSON string literals
+      text = text.replace(/"(?:[^"\\]|\\.)*"/g, (match) => {
+        return match.replace(/[\x00-\x1f]/g, (ch) => {
+          const map = {'\n':'\\n','\r':'\\r','\t':'\\t'};
+          return map[ch] || '\\u' + ('000' + ch.charCodeAt(0).toString(16)).slice(-4);
+        });
+      });
+      text = JSON.stringify(JSON.parse(text), null, 2);
+    } else if (ext === 'xml' || ext === 'html' || ext === 'htm' || ext === 'svg') {
+      // Basic XML/HTML indent
+      let formatted = '', indent = 0;
+      text.replace(/>\s*</g, '><').split(/(<[^>]+>)/g).forEach(node => {
+        if (!node.trim()) return;
+        if (node.match(/^<\/\w/)) indent--;
+        formatted += '  '.repeat(Math.max(0, indent)) + node.trim() + '\n';
+        if (node.match(/^<\w[^>]*[^/]>$/)) indent++;
+      });
+      text = formatted.trimEnd();
+    } else {
+      // Code: normalize indentation (2 spaces), trim trailing whitespace
+      text = text.split('\n').map(l => l.replace(/\t/g, '  ').trimEnd()).join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
+    }
+    ta.value = text;
+    updateEditorLines();
+    updateEditorCursor();
+    showStatus('Formatlandi', 'success');
+  } catch (e) {
+    showStatus('Format hatasi: ' + e.message, 'error');
   }
 }
 

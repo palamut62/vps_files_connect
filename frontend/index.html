@@ -886,6 +886,18 @@
     .editor-status { display:flex; align-items:center; padding:4px 14px; border-top:1px solid #0f3460; font-size:10px; color:#5a6a8a; gap:14px; flex-shrink:0; }
     .editor-modified { color:#f39c12; }
 
+    /* Download progress */
+    .dl-bar { position:fixed; bottom:28px; right:16px; width:300px; z-index:8000; display:flex; flex-direction:column; gap:4px; }
+    .dl-item { background:#16213e; border:1px solid #0f3460; border-radius:6px; padding:8px 12px; box-shadow:0 4px 12px rgba(0,0,0,0.4); animation: dlSlideIn 0.2s ease; }
+    @keyframes dlSlideIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+    .dl-item-name { font-size:11px; color:#e0e0e0; margin-bottom:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .dl-item-info { font-size:9px; color:#5a6a8a; margin-bottom:4px; display:flex; justify-content:space-between; gap:6px; }
+    .dl-pct { color:#6a8cff; font-weight:600; }
+    .dl-item-track { height:4px; background:#0f3460; border-radius:2px; overflow:hidden; }
+    .dl-item-fill { height:100%; background:#4a6cf7; border-radius:2px; transition:width 0.3s; }
+    .dl-item-done .dl-item-fill { background:#6dff9e; }
+    .dl-item-error .dl-item-fill { background:#e74c3c; }
+
     .term-input {
       flex: 1;
       background: transparent;
@@ -941,10 +953,13 @@
         ondragleave="event.preventDefault(); this.classList.remove('dragover'); return false;"
         ondrop="event.preventDefault(); event.stopPropagation(); this.classList.remove('dragover'); handleZoneDrop(event); return false;">
         <div class="uz-icon">&#x2B06;&#xFE0F;</div>
-        <div class="uz-text">
-          Surukle birak / <strong>tikla</strong> / Ctrl+V
+        <div style="display:flex; gap:8px; justify-content:center; margin-top:4px;">
+          <button class="btn-primary" style="font-size:11px; padding:5px 14px;" onclick="event.stopPropagation(); document.getElementById('fileInput').click();">Dosya Yukle</button>
+          <button class="btn-primary" style="font-size:11px; padding:5px 14px; background:#0f3460;" onclick="event.stopPropagation(); document.getElementById('folderInput').click();">Klasor Yukle</button>
         </div>
+        <div class="uz-text" style="margin-top:4px;">veya surukle birak / Ctrl+V</div>
         <input type="file" id="fileInput" multiple>
+        <input type="file" id="folderInput" webkitdirectory multiple>
       </div>
     </div>
   </div>
@@ -993,12 +1008,16 @@
   <!-- Bottom statusbar for disk info -->
   <div class="statusbar" id="diskBar"></div>
 
+  <!-- Download progress -->
+  <div class="dl-bar" id="dlBar"></div>
+
   <!-- File Editor -->
   <div class="editor-overlay" id="editorOverlay">
     <div class="editor-panel">
       <div class="editor-header">
         <span class="editor-filename" id="editorFilename"></span>
         <span class="editor-lang" id="editorLang"></span>
+        <button class="editor-btn editor-btn-close" id="editorFormat" onclick="formatEditorContent()">Formatla</button>
         <button class="editor-btn editor-btn-save" id="editorSave" onclick="saveEditorFile()">Kaydet (Ctrl+S)</button>
         <button class="editor-btn editor-btn-close" onclick="closeEditor()">Kapat</button>
       </div>

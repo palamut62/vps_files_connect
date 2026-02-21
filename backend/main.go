@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"archive/zip"
 	"io"
 	"log"
 	"net/http"
@@ -41,6 +42,7 @@ func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Disposition")
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
 			return
@@ -187,7 +189,32 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	remotePath := path.Join(destPath, header.Filename)
+	// Support subfolder from "subpath" form field (for folder uploads)
+	subPath := r.FormValue("subpath")
+	remotePath := ""
+	if subPath != "" {
+		// Normalize path separators
+		subPath = strings.ReplaceAll(subPath, "\\", "/")
+		// Create all intermediate directories one by one
+		dir := path.Join(destPath, path.Dir(subPath))
+		parts := strings.Split(dir, "/")
+		current := ""
+		for _, p := range parts {
+			if p == "" {
+				current = "/"
+				continue
+			}
+			if current == "" {
+				current = p
+			} else {
+				current = current + "/" + p
+			}
+			client.Mkdir(current) // ignore error if exists
+		}
+		remotePath = path.Join(destPath, subPath)
+	} else {
+		remotePath = path.Join(destPath, header.Filename)
+	}
 	remoteFile, err := client.Create(remotePath)
 	if err != nil {
 		jsonError(w, 500, fmt.Sprintf("Failed to create remote file: %v", err))
@@ -229,9 +256,23 @@ func handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Try simple remove first, if fails try recursive
 	if err := client.Remove(filePath); err != nil {
-		jsonError(w, 500, fmt.Sprintf("Failed to delete: %v", err))
-		return
+		// Check if it's a directory
+		stat, statErr := client.Stat(filePath)
+		if statErr != nil {
+			jsonError(w, 500, fmt.Sprintf("Failed to delete: %v", err))
+			return
+		}
+		if stat.IsDir() {
+			if rmErr := removeDir(client, filePath); rmErr != nil {
+				jsonError(w, 500, fmt.Sprintf("Failed to delete directory: %v", rmErr))
+				return
+			}
+		} else {
+			jsonError(w, 500, fmt.Sprintf("Failed to delete: %v", err))
+			return
+		}
 	}
 
 	jsonResponse(w, 200, map[string]string{"status": "deleted"})
@@ -338,7 +379,6 @@ func handleDownload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", fileName))
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", stat.Size()))
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	io.Copy(w, file)
 }
@@ -498,6 +538,136 @@ func handleSysInfo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, 200, info)
+}
+
+func handleExists(w http.ResponseWriter, r *http.Request) {
+	mu.Lock()
+	client := sftpClient
+	mu.Unlock()
+
+	if client == nil {
+		jsonError(w, 400, "Not connected")
+		return
+	}
+
+	filePath := r.URL.Query().Get("path")
+	_, err := client.Stat(filePath)
+	jsonResponse(w, 200, map[string]bool{"exists": err == nil})
+}
+
+func removeDir(client *sftp.Client, dirPath string) error {
+	entries, err := client.ReadDir(dirPath)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		fullPath := dirPath + "/" + entry.Name()
+		if entry.IsDir() {
+			if err := removeDir(client, fullPath); err != nil {
+				return err
+			}
+		} else {
+			if err := client.Remove(fullPath); err != nil {
+				return err
+			}
+		}
+	}
+	return client.RemoveDirectory(dirPath)
+}
+
+var skipDirs = map[string]bool{
+	"node_modules": true, ".git": true, "__pycache__": true,
+	".cache": true, "vendor": true, ".next": true, "dist": true,
+}
+
+func handleDownloadDir(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		jsonError(w, 405, "Method not allowed")
+		return
+	}
+
+	mu.Lock()
+	client := sftpClient
+	mu.Unlock()
+
+	if client == nil {
+		jsonError(w, 400, "Not connected")
+		return
+	}
+
+	dirPath := r.URL.Query().Get("path")
+	if dirPath == "" {
+		jsonError(w, 400, "Path is required")
+		return
+	}
+
+	dirName := path.Base(dirPath)
+
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.zip\"", dirName))
+	w.Header().Set("Content-Type", "application/zip")
+
+	zw := zip.NewWriter(w)
+	defer zw.Close()
+
+	// Get exclude list from query param
+	excludeParam := r.URL.Query().Get("exclude")
+	extraSkip := map[string]bool{}
+	if excludeParam != "" {
+		for _, s := range strings.Split(excludeParam, ",") {
+			extraSkip[strings.TrimSpace(s)] = true
+		}
+	}
+
+	var walkDir func(string, string) error
+	walkDir = func(remotePath, zipPrefix string) error {
+		entries, err := client.ReadDir(remotePath)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			// Skip heavy/unnecessary directories
+			if entry.IsDir() && (skipDirs[entry.Name()] || extraSkip[entry.Name()]) {
+				continue
+			}
+
+			fullPath := remotePath + "/" + entry.Name()
+			zipPath := zipPrefix + "/" + entry.Name()
+
+			if entry.IsDir() {
+				_, err := zw.Create(zipPath + "/")
+				if err != nil {
+					return err
+				}
+				if err := walkDir(fullPath, zipPath); err != nil {
+					return err
+				}
+			} else {
+				header, err := zip.FileInfoHeader(entry)
+				if err != nil {
+					return err
+				}
+				header.Name = zipPath
+				header.Method = zip.Deflate
+
+				writer, err := zw.CreateHeader(header)
+				if err != nil {
+					return err
+				}
+
+				file, err := client.Open(fullPath)
+				if err != nil {
+					return err
+				}
+				io.Copy(writer, file)
+				file.Close()
+			}
+		}
+		return nil
+	}
+
+	if err := walkDir(dirPath, dirName); err != nil {
+		log.Printf("Zip walk error: %v", err)
+	}
 }
 
 func handleReadFile(w http.ResponseWriter, r *http.Request) {
@@ -668,6 +838,8 @@ func main() {
 	http.HandleFunc("/download", corsMiddleware(handleDownload))
 	http.HandleFunc("/diskinfo", corsMiddleware(handleDiskInfo))
 	http.HandleFunc("/sysinfo", corsMiddleware(handleSysInfo))
+	http.HandleFunc("/exists", corsMiddleware(handleExists))
+	http.HandleFunc("/downloaddir", corsMiddleware(handleDownloadDir))
 	http.HandleFunc("/readfile", corsMiddleware(handleReadFile))
 	http.HandleFunc("/writefile", corsMiddleware(handleWriteFile))
 	http.HandleFunc("/exec", corsMiddleware(handleExec))
